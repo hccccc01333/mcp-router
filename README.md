@@ -19,6 +19,66 @@ GitHub: https://github.com/hccccc01333/mcp-router
 
 ---
 
+## 新手教程：5 分钟跑起来
+
+### 它到底解决什么问题（打个比方）
+
+假设你的 AI 助手能使用的"工具箱"全靠 MCP 提供：GitHub 工具箱有 30 个工具、数据库工具箱 20 个、浏览器 25 个……加起来轻轻松松超过 100 个。
+
+但你的 AI 工具（如 TraeCode）只肯一次接收 **40 个工具**，多的会被悄悄丢掉——你经常发现"某个工具怎么死活调不到"。
+
+这个项目就是给 AI 装了一个**"总管理员"**：
+
+- AI 永远只面对 5 个入口，不再担心超标
+- 你想用它做什么，总管理员就从背后几百个真实工具里**现搜一个最合适的**来执行
+
+### 跟着做（三分钟）
+
+**第 1 步：拿到代码并装好依赖**
+
+```bash
+# 进入你的工作目录
+npm install
+npm run build
+```
+
+**第 2 步：告诉 Router 你有哪些真实 MCP**
+
+把仓库里的 `examples/mcp-router.config.example.json` 复制到你本地（比如就叫 `mcp-router.config.json`），把它打开，把里面 `mcpServers` 的对象替换成你**现在正在用的那批 MCP**（格式跟你在 TraeCode 里配 MCP 一模一样，直接整段拷进来即可）。密钥可以用 `${变量名}` 引用，不用明文写。
+
+**第 3 步：把 Router 接进 TraeCode**
+
+在 TraeCode 的 MCP 设置里添加一个 MCP Server，内容如下（把两个路径换成你电脑上真实的位置）：
+
+```json
+{
+  "mcpServers": {
+    "mcp-router": {
+      "command": "node",
+      "args": [
+        "/绝对路径/mcp-router/dist/index.js",
+        "--config",
+        "/绝对路径/mcp-router.config.json"
+      ]
+    }
+  }
+}
+```
+
+重启 TraeCode，工具面板里会出现 `search_tools` / `execute_tool` 这几个入口——这就接好了。
+
+**第 4 步：试一下**
+
+让你的 AI 助手做一件事，比如：
+
+> 用 `search_tools` 找一个能做 X 的工具，再用 `execute_tool` 调用它完成 Y。
+
+你会看到它先"搜工具"再"调用工具"，而不是像以前那样因为工具太多而犯迷糊。
+
+> 遇到问题？看 [验证](#验证) 一节了解我们实测过的运行效果，或看 [配置](#配置) 一节了解每个参数的用途。
+
+---
+
 ## 架构
 
 ```mermaid
