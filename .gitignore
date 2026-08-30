@@ -1,0 +1,4 @@
+node_modules/
+dist/
+*.log
+mcp-router.config.json

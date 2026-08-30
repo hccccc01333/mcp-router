@@ -1,0 +1,14 @@
+{
+  "timeouts": { "connectMs": 15000, "callMs": 90000 },
+  "maxResultChars": 24000,
+  "mcpServers": {
+    "everything": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-everything"]
+    },
+    "remote-example": {
+      "url": "https://your-host.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${REMOTE_MCP_TOKEN}" }
+    }
+  }
+}

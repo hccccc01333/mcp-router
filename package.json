@@ -1,0 +1,31 @@
+{
+  "name": "mcp-router",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Aggregate many MCP servers behind four meta-tools so agents stay within tool-count limits",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "mcp-router": "dist/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "e2e": "tsx scripts/e2e.ts",
+    "bench": "tsx scripts/bench.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.16.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

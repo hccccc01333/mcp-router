@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "mcp-router": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/mcp-router/dist/index.js",
+        "--config",
+        "/absolute/path/to/mcp-router.config.json"
+      ]
+    }
+  }
+}
