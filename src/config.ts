@@ -140,7 +140,8 @@ export function loadConfig(explicitPath?: string): RouterConfig {
   if (typeof serversRaw !== "object" || serversRaw === null || Array.isArray(serversRaw)) {
     throw new Error(`router config ${path} must contain an "mcpServers" object`);
   }
-  const mcpServers: Record<string, DownstreamSpec> = {};
+  // 无原型对象:防止 "__proto__" 这类键名触发原型 setter 而静默丢失配置
+  const mcpServers: Record<string, DownstreamSpec> = Object.create(null);
   for (const [name, raw] of Object.entries(serversRaw as Record<string, unknown>)) {
     mcpServers[name] = expandSpec(parseSpec(name, raw));
   }

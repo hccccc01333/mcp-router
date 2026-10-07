@@ -10,7 +10,7 @@
 
 ```text
 ✅ Build  0 errors
-✅ Smoke  18/18
+✅ Smoke  27/27
 ✅ E2E    7/7   (Windows 真实进程链路)
 ✅ Bench  1000 tools → ~0.6ms avg search
 ```
@@ -150,7 +150,7 @@ PASS third-party downstream aggregated into shared catalog
 
 这里还顺带验证了：**5 个真实下游聚合出 54 个工具，TraeCode 仍只见 5 个元工具**——突破了 40 上限。
 
-`npm run smoke`（内存协议链路 + 真实 localhost SSE 链路） 18/18 通过。
+`npm run smoke`（内存协议链路 + 真实 localhost SSE/Streamable HTTP 链路 + 失败清理/关闭竞态/.cmd 包装回归） 27/27 通过;`npm run e2e` 验证 Agent 关闭 stdio 后路由**优雅退出(code 0)且子进程全部回收**（无孤儿进程）。
 
 ---
 
@@ -223,7 +223,7 @@ npm run build
 
 - **stdio / HTTP / SSE 三种下游**：`command` 走 stdio；`url` 缺省走 Streamable HTTP；`"type": "sse"` 走旧版 HTTP+SSE（2024-11-05 协议，兼容未升级的老服务器；也可显式写 `"type": "http"` / `"streamable-http"` / `"stdio"`）
 - **环境变量展开**：`${ENV_NAME}` 从环境读取，密钥不落盘
-- **独立超时 + 失败重建**、**结果截断**（应对官方"大型响应会被裁剪"的第二层限制）
+- **独立超时 + 失败重建**、**结果截断**（应对官方"大型响应会被裁剪"的第二层限制）；工具调用失败时自动断开重连并重试一次——注意**非幂等工具存在被重复执行的可能**
 
 ## 元工具
 

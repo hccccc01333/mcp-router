@@ -18,7 +18,9 @@ function comSpec(): string {
 function wrapWindowsCommand(command: string, args: string[]): { command: string; args: string[] } {
   if (process.platform !== "win32") return { command, args };
   const bare = command.split(/[\\/]/).pop()?.toLowerCase() ?? "";
-  if (!/\.(exe|cmd|bat)$/.test(bare) && WRAPPABLE_ON_WINDOWS.has(bare)) {
+  // .exe 可直接 spawn;.cmd/.bat 是批处理脚本,npx/npm 等无扩展名脚本由 cmd 解析 —— 都必须经 cmd.exe 执行
+  const needsCmd = !/\.exe$/.test(bare) && (WRAPPABLE_ON_WINDOWS.has(bare) || /\.(cmd|bat)$/.test(bare));
+  if (needsCmd) {
     return { command: comSpec(), args: ["/c", command, ...args] };
   }
   return { command, args };
@@ -56,6 +58,7 @@ export class Downstream {
   lastError?: string;
   private client?: Client;
   private transportOverride?: Transport;
+  private transport?: Transport;
   private connecting?: Promise<Client>;
 
   constructor(name: string, spec: DownstreamSpec, transportOverride?: Transport) {
@@ -102,14 +105,19 @@ export class Downstream {
     if (!this.connecting) {
       this.status = "connecting";
       this.connecting = (async () => {
+        const client = new Client({ name: "mcp-router", version: ROUTER_VERSION });
+        const transport = this.transportOverride ?? this.buildTransport();
         try {
-          const client = new Client({ name: "mcp-router", version: ROUTER_VERSION });
-          await withTimeout(client.connect(this.transportOverride ?? this.buildTransport()), timeoutMs, `connect(${this.name})`);
+          await withTimeout(client.connect(transport), timeoutMs, `connect(${this.name})`);
           this.client = client;
+          this.transport = transport;
           this.status = "connected";
           this.lastError = undefined;
           return client;
         } catch (e) {
+          // 失败/超时的连接必须关闭底层 transport,否则 stdio 子进程会泄漏
+          void client.close().catch(() => {});
+          this.transport = undefined;
           this.status = "error";
           this.lastError = errMsg(e);
           throw e;
@@ -145,8 +153,22 @@ export class Downstream {
   }
 
   async close(): Promise<void> {
+    // 若有进行中的连接,等它落定:成功则一并关闭(否则握手完成后会残留子进程),失败已由 getClient 清理
+    if (this.connecting) {
+      await this.connecting.catch(() => {});
+    }
     const client = this.client;
     this.client = undefined;
+    const transport = this.transport;
+    this.transport = undefined;
+    // Streamable HTTP 会话按规范(SHOULD)先以 DELETE 显式终止;服务器不支持时回 405,失败不阻断后续关闭
+    if (transport) {
+      try {
+        await (transport as { terminateSession?: () => Promise<void> }).terminateSession?.();
+      } catch {
+        // 忽略:无会话/网络错误/405 均可安全跳过
+      }
+    }
     if (client) {
       try {
         await client.close();

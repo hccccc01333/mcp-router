@@ -127,11 +127,23 @@ async function main(): Promise<void> {
       console.log(`sample search result:\n${bodyOf(sampled)}`);
     }
   } finally {
-    if (process.platform === "win32") {
-      const taskkill = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
-      if (child.pid) spawn(taskkill, ["/PID", String(child.pid), "/T", "/F"]);
-    } else {
-      child.kill("SIGTERM");
+    // 优雅关闭:stdin EOF 应触发路由器停机钩子(server.close + 关闭全部下游)→ 事件循环自然退出
+    child.stdin.end();
+    const exit = await new Promise<number | null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), 15000);
+      child.once("exit", (code) => {
+        clearTimeout(timer);
+        resolve(code);
+      });
+    });
+    check("router exits gracefully (code 0) after stdin close, child processes reclaimed", exit === 0, `exit=${exit}`);
+    if (exit !== 0 && child.pid) {
+      if (process.platform === "win32") {
+        const taskkill = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
+        spawn(taskkill, ["/PID", String(child.pid), "/T", "/F"]);
+      } else {
+        child.kill("SIGTERM");
+      }
     }
   }
 
