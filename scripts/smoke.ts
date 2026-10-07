@@ -1,8 +1,14 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
+import { errMsg, loadConfig } from "../src/config.js";
 import { Downstream } from "../src/downstream.js";
 import { ToolRegistry } from "../src/registry.js";
 import { META_TOOL_NAMES, createRouterServer } from "../src/server.js";
@@ -121,6 +127,110 @@ async function main(): Promise<void> {
       /1 tool calls, 0 errors/.test(statsBody),
     statsBody
   );
+
+  // --- SSE 下游:真实 localhost HTTP+SSE 链路 ---
+  {
+    const sseMcp = new McpServer({ name: "sse-echo-downstream", version: "0.1.0" });
+    sseMcp.registerTool(
+      "sse_add",
+      {
+        title: "SSE Add numbers",
+        description: "Add two numbers over the legacy SSE transport, verifying mcp-router SSE downstream support.",
+        inputSchema: { a: z.number().describe("First addend"), b: z.number().describe("Second addend") },
+      },
+      async ({ a, b }) => ({ content: [{ type: "text", text: String(a + b) }] })
+    );
+
+    let sseTransport: SSEServerTransport | undefined;
+    const httpServer = createServer((req, res) => {
+      void (async () => {
+        if (req.method === "GET" && req.url === "/sse") {
+          sseTransport = new SSEServerTransport("/messages", res);
+          await sseMcp.connect(sseTransport);
+        } else if (req.method === "POST" && req.url?.startsWith("/messages")) {
+          if (!sseTransport) {
+            res.writeHead(400).end();
+            return;
+          }
+          await sseTransport.handlePostMessage(req, res);
+        } else {
+          res.writeHead(404).end();
+        }
+      })().catch((e) => res.destroy(e instanceof Error ? e : undefined));
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
+    const ssePort = (httpServer.address() as { port: number }).port;
+
+    const sseDown = new Downstream("sse-echo", {
+      url: `http://127.0.0.1:${ssePort}/sse`,
+      headers: { "X-Router-Test": "sse" },
+      type: "sse",
+    });
+    check("sse downstream reports kind as sse", sseDown.kind === "sse", sseDown.kind);
+
+    const sseTools = await sseDown.listTools(5000);
+    check(
+      "sse downstream lists tools over legacy HTTP+SSE transport",
+      sseTools.some((t) => t.name === "sse_add") && sseDown.status === "connected",
+      `status=${sseDown.status}, tools=${sseTools.map((t) => t.name).join(",")}`
+    );
+
+    const sseCall = await sseDown.callTool(5000, "sse_add", { a: 20, b: 22 });
+    check(
+      "sse downstream executes tool round-trip",
+      bodyOf(sseCall).includes("42") && !sseCall.isError,
+      bodyOf(sseCall)
+    );
+
+    await sseDown.close();
+    httpServer.closeAllConnections();
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+  }
+
+  // --- 配置 type 字段解析 ---
+  {
+    const dir = mkdtempSync(join(tmpdir(), "mcp-router-smoke-"));
+    const configPath = join(dir, "config.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        timeouts: { connectMs: 5000, callMs: 5000 },
+        maxResultChars: 4000,
+        mcpServers: {
+          legacy: { type: "sse", url: "https://example.com/sse", headers: { "X-A": "b" } },
+          plain: { url: "https://example.com/mcp" },
+          explicit: { type: "streamable-http", url: "https://example.com/api" },
+          local: { type: "stdio", command: "node" },
+        },
+      })
+    );
+    const cfg = loadConfig(configPath);
+    const legacy = cfg.mcpServers.legacy;
+    check(
+      'config parses "type": "sse" into sse downstream with headers kept',
+      "url" in legacy && legacy.type === "sse" && legacy.headers?.["X-A"] === "b",
+      JSON.stringify(legacy)
+    );
+    const plain = cfg.mcpServers.plain;
+    const explicit = cfg.mcpServers.explicit;
+    const local = cfg.mcpServers.local;
+    check(
+      'config defaults url entries to streamable http ("http"/"streamable-http" normalize away)',
+      "url" in plain && plain.type === undefined && "url" in explicit && explicit.type === undefined,
+      `plain=${JSON.stringify(plain)} explicit=${JSON.stringify(explicit)}`
+    );
+    check('config accepts explicit "type": "stdio"', "command" in local && local.command === "node", JSON.stringify(local));
+
+    writeFileSync(configPath, JSON.stringify({ mcpServers: { bad: { type: "ws", url: "https://example.com" } } }));
+    let rejected = false;
+    try {
+      loadConfig(configPath);
+    } catch (e) {
+      rejected = errMsg(e).includes("must be one of");
+    }
+    check("config rejects unknown type values", rejected);
+    rmSync(dir, { recursive: true, force: true });
+  }
 
   console.log(`\n${passed} passed, ${failures.length} failed`);
   if (failures.length > 0) process.exitCode = 1;

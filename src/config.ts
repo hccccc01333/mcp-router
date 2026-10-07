@@ -12,6 +12,12 @@ export interface StdioDownstream {
 export interface HttpDownstream {
   url: string;
   headers?: Record<string, string>;
+  /**
+   * 显式传输类型:
+   * - `"sse"` — 旧版 HTTP+SSE 传输(2024-11-05 协议),用于尚未支持 Streamable HTTP 的老服务器
+   * - 缺省 — Streamable HTTP(2025-03-26 协议及以后)
+   */
+  type?: "sse";
 }
 
 export type DownstreamSpec = StdioDownstream | HttpDownstream;
@@ -64,18 +70,34 @@ function stringMap(name: string, key: string, raw: unknown): Record<string, stri
   return out;
 }
 
+const SPEC_TYPES = new Set(["stdio", "http", "streamable-http", "sse"]);
+const URL_SPEC_TYPES = new Set(["http", "streamable-http", "sse"]);
+
 function parseSpec(name: string, raw: unknown): DownstreamSpec {
   if (typeof raw !== "object" || raw === null) {
     throw new Error(`mcpServers.${name} must be an object`);
   }
   const s = raw as Record<string, unknown>;
+  const type = s.type === undefined ? undefined : String(s.type);
+  if (type !== undefined && !SPEC_TYPES.has(type)) {
+    throw new Error(
+      `mcpServers.${name}.type must be one of "stdio", "http", "streamable-http", "sse" (got ${JSON.stringify(s.type)})`
+    );
+  }
   if (typeof s.url === "string") {
+    if (type === "stdio") {
+      throw new Error(`mcpServers.${name} with type "stdio" must define "command", not "url"`);
+    }
     const spec: HttpDownstream = { url: s.url };
+    if (type === "sse") spec.type = "sse";
     const headers = stringMap(name, "headers", s.headers);
     if (headers) spec.headers = headers;
     return spec;
   }
   if (typeof s.command === "string") {
+    if (type !== undefined && URL_SPEC_TYPES.has(type)) {
+      throw new Error(`mcpServers.${name} with type "${type}" must define "url", not "command"`);
+    }
     const spec: StdioDownstream = { command: s.command };
     if (s.args !== undefined) {
       if (!Array.isArray(s.args)) throw new Error(`mcpServers.${name}.args must be an array`);
@@ -89,7 +111,11 @@ function parseSpec(name: string, raw: unknown): DownstreamSpec {
     }
     return spec;
   }
-  throw new Error(`mcpServers.${name} must define either "command" (stdio) or "url" (http)`);
+  throw new Error(
+    type
+      ? `mcpServers.${name} with type "${type}" must define ${type === "stdio" ? '"command"' : '"url"'}`
+      : `mcpServers.${name} must define either "command" (stdio) or "url" (http)`
+  );
 }
 
 export function resolveConfigPath(explicit?: string): string {

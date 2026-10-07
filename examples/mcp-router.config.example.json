@@ -9,6 +9,11 @@
     "remote-example": {
       "url": "https://your-host.example.com/mcp",
       "headers": { "Authorization": "Bearer ${REMOTE_MCP_TOKEN}" }
+    },
+    "legacy-sse-example": {
+      "type": "sse",
+      "url": "https://old-host.example.com/sse",
+      "headers": { "Authorization": "Bearer ${SSE_MCP_TOKEN}" }
     }
   }
 }

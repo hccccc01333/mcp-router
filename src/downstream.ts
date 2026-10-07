@@ -1,4 +1,5 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -63,8 +64,11 @@ export class Downstream {
     this.transportOverride = transportOverride;
   }
 
-  get kind(): "stdio" | "http" {
-    return "url" in this.spec ? "http" : "stdio";
+  get kind(): "stdio" | "http" | "sse" {
+    if ("url" in this.spec) {
+      return (this.spec as HttpDownstream).type === "sse" ? "sse" : "http";
+    }
+    return "stdio";
   }
 
   get target(): string {
@@ -76,7 +80,12 @@ export class Downstream {
   private buildTransport(): Transport {
     if ("url" in this.spec) {
       const s = this.spec as HttpDownstream;
-      return new StreamableHTTPClientTransport(new URL(s.url), s.headers ? { requestInit: { headers: s.headers } } : undefined);
+      const options = s.headers ? { requestInit: { headers: s.headers } } : undefined;
+      // "sse":旧版 HTTP+SSE 传输(2024-11-05 协议);缺省走 Streamable HTTP
+      if (s.type === "sse") {
+        return new SSEClientTransport(new URL(s.url), options);
+      }
+      return new StreamableHTTPClientTransport(new URL(s.url), options);
     }
     const s = this.spec as StdioDownstream;
     const wrapped = wrapWindowsCommand(s.command, s.args ?? []);
