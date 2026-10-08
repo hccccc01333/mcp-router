@@ -45,6 +45,20 @@ async function main(): Promise<void> {
   });
   await server.connect(new StdioServerTransport());
   console.error(`[mcp-router] v${ROUTER_VERSION} listening on stdio`);
+  // SDK 的 StdioServerTransport 不会监听 stdin EOF(它只在显式 close() 时触发 onclose)。
+  // Agent 退出/关闭写端后这里手动停机:关闭协议层和全部下游,回收子进程/连接,
+  // 并让事件循环自然退出(否则 stdio 子进程句柄会使进程挂住,产生孤儿进程)。
+  let shuttingDown = false;
+  const shutdown = (): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    void (async () => {
+      await server.close().catch(() => {});
+      await Promise.allSettled([...downstreams.values()].map((down) => down.close()));
+    })();
+  };
+  process.stdin.on("end", shutdown);
+  process.stdin.on("close", shutdown);
 }
 
 process.on("unhandledRejection", (reason) => {

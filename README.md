@@ -10,7 +10,7 @@
 
 ```text
 ✅ Build  0 errors
-✅ Smoke  11/11
+✅ Smoke  27/27
 ✅ E2E    7/7   (Windows 真实进程链路)
 ✅ Bench  1000 tools → ~0.6ms avg search
 ```
@@ -118,7 +118,7 @@ TRAE 官方明确：MCP 工具会占上下文，太多工具还会分散模型�
 完整实现见 `src/`。几个关键模块：
 
 - `search.ts` — 关键词评分检索，对中英文查询友好，加权匹配工具名 / Server 名 / 描述
-- `downstream.ts` — 统一的 stdio / HTTP 下游代理：独立超时、失败自动重建连接、**Windows 兼容层**
+- `downstream.ts` — 统一的 stdio / Streamable HTTP / SSE 下游代理：独立超时、失败自动重建连接、**Windows 兼容层**
 - `registry.ts` — `server::tool` 命名空间隔离的全局工具目录
 - `stats.ts` — 检索命中 / schema 查看 / 调用数 / 错误数统计，为自动工具选择打基础
 
@@ -150,7 +150,7 @@ PASS third-party downstream aggregated into shared catalog
 
 这里还顺带验证了：**5 个真实下游聚合出 54 个工具，TraeCode 仍只见 5 个元工具**——突破了 40 上限。
 
-`npm run smoke`（内存协议链路） 11/11 通过。
+`npm run smoke`（内存协议链路 + 真实 localhost SSE/Streamable HTTP 链路 + 失败清理/关闭竞态/.cmd 包装回归） 27/27 通过;`npm run e2e` 验证 Agent 关闭 stdio 后路由**优雅退出(code 0)且子进程全部回收**（无孤儿进程）。
 
 ---
 
@@ -215,14 +215,15 @@ npm run build
   "maxResultChars": 24000,
   "mcpServers": {
     "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] },
-    "remote": { "url": "https://your-host/mcp", "headers": { "Authorization": "Bearer ${TOKEN}" } }
+    "remote": { "url": "https://your-host/mcp", "headers": { "Authorization": "Bearer ${TOKEN}" } },
+    "legacy": { "type": "sse", "url": "https://old-host/sse" }
   }
 }
 ```
 
-- **HTTP / stdio 双下游**：`url` 走 Streamable HTTP，`command` 走 stdio
+- **stdio / HTTP / SSE 三种下游**：`command` 走 stdio；`url` 缺省走 Streamable HTTP；`"type": "sse"` 走旧版 HTTP+SSE（2024-11-05 协议，兼容未升级的老服务器；也可显式写 `"type": "http"` / `"streamable-http"` / `"stdio"`）
 - **环境变量展开**：`${ENV_NAME}` 从环境读取，密钥不落盘
-- **独立超时 + 失败重建**、**结果截断**（应对官方"大型响应会被裁剪"的第二层限制）
+- **独立超时 + 失败重建**、**结果截断**（应对官方"大型响应会被裁剪"的第二层限制）；工具调用失败时自动断开重连并重试一次——注意**非幂等工具存在被重复执行的可能**
 
 ## 元工具
 
