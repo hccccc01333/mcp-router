@@ -49,7 +49,7 @@ function mergedEnv(extra?: Record<string, string>): Record<string, string> | und
   return { ...base, ...extra };
 }
 
-export type DownstreamStatus = "idle" | "connecting" | "connected" | "error";
+export type DownstreamStatus = "idle" | "connecting" | "connected" | "error" | "disabled";
 
 export class Downstream {
   readonly name: string;
@@ -65,6 +65,8 @@ export class Downstream {
     this.name = name;
     this.spec = spec;
     this.transportOverride = transportOverride;
+    // 配置显式禁用:不连接、不加载工具;保留实例以便 list_servers 显示 disabled 状态
+    if (spec.disabled === true) this.status = "disabled";
   }
 
   get kind(): "stdio" | "http" | "sse" {
@@ -101,6 +103,10 @@ export class Downstream {
   }
 
   getClient(timeoutMs: number): Promise<Client> {
+    // disabled 是防御路径:正常流程 warmup 已跳过、registry 无其工具,不会被调用
+    if (this.status === "disabled") {
+      return Promise.reject(new Error(`downstream "${this.name}" is disabled by config`));
+    }
     if (this.client) return Promise.resolve(this.client);
     if (!this.connecting) {
       this.status = "connecting";
@@ -176,6 +182,7 @@ export class Downstream {
         this.lastError = errMsg(new Error("close failed"));
       }
     }
-    if (this.status !== "error") this.status = "idle";
+    // disabled 不可被 close 覆盖回 idle:禁用是配置属性,不是运行状态
+    if (this.status !== "error" && this.status !== "disabled") this.status = "idle";
   }
 }

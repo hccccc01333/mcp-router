@@ -89,6 +89,8 @@ async function main(): Promise<void> {
   const registry = new ToolRegistry();
   registry.replaceServer(downstream.name, tools);
   const downstreams = new Map([[downstream.name, downstream]]);
+  // 禁用下游也进托管列表:list_servers 应显示其 disabled 状态而不连接
+  downstreams.set("off-srv", new Downstream("off-srv", { command: "node", disabled: true }));
   const stats = new UsageStats();
   const router = createRouterServer({ config, downstreams, registry, warmup: Promise.resolve(), stats });
 
@@ -148,6 +150,7 @@ async function main(): Promise<void> {
   const servers = await client.callTool({ name: "list_servers", arguments: {} });
   const serversBody = bodyOf(servers);
   check("list_servers shows connected status", serversBody.includes("echo") && serversBody.includes("connected") && serversBody.includes("2 tools"), serversBody);
+  check("list_servers shows disabled status for skipped servers", serversBody.includes("off-srv") && serversBody.includes("disabled"), serversBody);
 
   const statsRes = await client.callTool({ name: "tool_stats", arguments: {} });
   const statsBody = bodyOf(statsRes);
@@ -367,6 +370,51 @@ async function main(): Promise<void> {
       protoKeys.length === 1 && protoKeys[0] === "__proto__" && protoEntry !== undefined && "command" in protoEntry && protoEntry.command === "node",
       JSON.stringify(protoKeys)
     );
+
+    // --- disabled 字段:默认 false,显式 true 才禁用,非法值拒绝 ---
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        mcpServers: {
+          on: { command: "node" },
+          off: { command: "node", disabled: true },
+          offUrl: { url: "https://example.com/mcp", disabled: true },
+        },
+      })
+    );
+    const disCfg = loadConfig(configPath);
+    check(
+      'config defaults disabled to false (field absent) when omitted',
+      disCfg.mcpServers.on.disabled === undefined,
+      JSON.stringify(disCfg.mcpServers.on)
+    );
+    check(
+      'config parses "disabled": true on both stdio and http specs',
+      disCfg.mcpServers.off.disabled === true && disCfg.mcpServers.offUrl.disabled === true,
+      JSON.stringify([disCfg.mcpServers.off, disCfg.mcpServers.offUrl])
+    );
+    writeFileSync(configPath, JSON.stringify({ mcpServers: { bad: { command: "node", disabled: "yes" } } }));
+    let disRejected = false;
+    try {
+      loadConfig(configPath);
+    } catch (e) {
+      disRejected = errMsg(e).includes("disabled");
+    }
+    check("config rejects non-boolean disabled values", disRejected);
+
+    // disabled 下游:不连接、调用被明确拒绝、close 不改变 disabled 状态
+    const disDown = new Downstream("off-srv", { command: "node", disabled: true });
+    check("disabled downstream starts in disabled status without connecting", disDown.status === "disabled", disDown.status);
+    let disErr = "";
+    try {
+      await disDown.listTools(500);
+    } catch (e) {
+      disErr = errMsg(e);
+    }
+    check("disabled downstream rejects listTools with clear error", disErr.includes("disabled"), disErr);
+    await disDown.close();
+    check("close() keeps disabled status intact", disDown.status === "disabled", disDown.status);
+
     rmSync(dir, { recursive: true, force: true });
   }
 

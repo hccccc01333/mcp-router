@@ -47,6 +47,11 @@ HTTP 客户端接入: http://<ip>:<port>/mcp   (健康探活: GET /healthz)`);
 async function warmupAll(config: RouterConfig, downstreams: Map<string, Downstream>, registry: ToolRegistry): Promise<void> {
   await Promise.allSettled(
     [...downstreams.values()].map(async (down) => {
+      // 配置禁用的下游:跳过连接与加载,只留一行日志确认配置被识别
+      if (down.status === "disabled") {
+        console.error(`[mcp-router] ${down.name}: disabled, skipped`);
+        return;
+      }
       try {
         const tools = await down.listTools(config.timeouts.connectMs);
         registry.replaceServer(down.name, tools);
@@ -56,7 +61,9 @@ async function warmupAll(config: RouterConfig, downstreams: Map<string, Downstre
       }
     })
   );
-  console.error(`[mcp-router] catalog ready: ${registry.size} tool(s) from ${downstreams.size} server(s)`);
+  const enabled = [...downstreams.values()].filter((down) => down.status !== "disabled").length;
+  const skipped = downstreams.size - enabled;
+  console.error(`[mcp-router] catalog ready: ${registry.size} tool(s) from ${enabled} server(s)${skipped > 0 ? ` (${skipped} disabled)` : ""}`);
 }
 
 async function main(): Promise<void> {

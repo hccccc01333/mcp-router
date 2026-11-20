@@ -222,12 +222,14 @@ npm run build
   "mcpServers": {
     "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] },
     "remote": { "url": "https://your-host/mcp", "headers": { "Authorization": "Bearer ${TOKEN}" } },
-    "legacy": { "type": "sse", "url": "https://old-host/sse" }
+    "legacy": { "type": "sse", "url": "https://old-host/sse" },
+    "local-tool": { "command": "C:\\path\\to\\your-tool.exe", "args": ["--stdio"], "disabled": true }
   }
 }
 ```
 
 - **stdio / HTTP / SSE 三种下游**：`command` 走 stdio；`url` 缺省走 Streamable HTTP；`"type": "sse"` 走旧版 HTTP+SSE（2024-11-05 协议，兼容未升级的老服务器；也可显式写 `"type": "http"` / `"streamable-http"` / `"stdio"`）
+- **按需禁用**：`"disabled": true` 显式跳过该下游——不连接、不加载工具，适合临时停用某个 server 而不删配置（默认 `false`）；`list_servers` 中显示为 `disabled` 状态，catalog 统计会排除它
 - **环境变量展开**：`${ENV_NAME}` 从环境读取，密钥不落盘
 - **独立超时 + 失败重建**、**结果截断**（应对官方"大型响应会被裁剪"的第二层限制）；工具调用失败时自动断开重连并重试一次——注意**非幂等工具存在被重复执行的可能**
 

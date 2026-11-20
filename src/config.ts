@@ -2,14 +2,23 @@ import { readFileSync } from "node:fs";
 
 export const ROUTER_VERSION = "0.1.0";
 
-export interface StdioDownstream {
+/** 两种下游共有的可选字段 */
+interface CommonDownstream {
+  /**
+   * 显式禁用:为 true 时运行时跳过该下游,不连接、不加载工具(默认 false)。
+   * 保留在 list_servers 输出中(status=disabled),方便确认配置被识别但未启用。
+   */
+  disabled?: boolean;
+}
+
+export interface StdioDownstream extends CommonDownstream {
   command: string;
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
 }
 
-export interface HttpDownstream {
+export interface HttpDownstream extends CommonDownstream {
   url: string;
   headers?: Record<string, string>;
   /**
@@ -97,11 +106,16 @@ function parseSpec(name: string, raw: unknown): DownstreamSpec {
       `mcpServers.${name}.type must be one of "stdio", "http", "streamable-http", "sse" (got ${JSON.stringify(s.type)})`
     );
   }
+  // disabled 默认 false(缺省不设字段);仅显式 true 才禁用,非法值拒绝而不是静默忽略
+  if (s.disabled !== undefined && typeof s.disabled !== "boolean") {
+    throw new Error(`mcpServers.${name}.disabled must be a boolean (got ${JSON.stringify(s.disabled)})`);
+  }
   if (typeof s.url === "string") {
     if (type === "stdio") {
       throw new Error(`mcpServers.${name} with type "stdio" must define "command", not "url"`);
     }
     const spec: HttpDownstream = { url: s.url };
+    if (s.disabled === true) spec.disabled = true;
     if (type === "sse") spec.type = "sse";
     const headers = stringMap(name, "headers", s.headers);
     if (headers) spec.headers = headers;
@@ -112,6 +126,7 @@ function parseSpec(name: string, raw: unknown): DownstreamSpec {
       throw new Error(`mcpServers.${name} with type "${type}" must define "url", not "command"`);
     }
     const spec: StdioDownstream = { command: s.command };
+    if (s.disabled === true) spec.disabled = true;
     if (s.args !== undefined) {
       if (!Array.isArray(s.args)) throw new Error(`mcpServers.${name}.args must be an array`);
       spec.args = s.args.map(String);
