@@ -223,7 +223,7 @@ npm run build
     "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] },
     "remote": { "url": "https://your-host/mcp", "headers": { "Authorization": "Bearer ${TOKEN}" } },
     "legacy": { "type": "sse", "url": "https://old-host/sse" },
-    "local-tool": { "command": "C:\\path\\to\\your-tool.exe", "args": ["--stdio"], "disabled": true }
+    "local-tool": { "command": "/path/to/your-tool", "args": ["--stdio"], "disabled": true }
   }
 }
 ```
@@ -248,11 +248,13 @@ npm run build
 
 ### 启动方式
 
-双击仓库根目录的 `start-http.bat`（等价于手动执行）：
+Windows 下双击仓库根目录的 `start-http.bat`，Linux / macOS 下运行 `./start-http.sh`（或直接执行等价命令）：
 
 ```bash
 node dist/index.js --transport http --host 0.0.0.0 --port 7800 --config mcp-router.config.json
 ```
+
+> Router 本身与全部功能（stdio 下游、HTTP/SSE 下游、HTTP 对外服务、token 校验）在 Windows / Linux / macOS 上均可运行；Windows 特有的 `cmd.exe` 包装（npx/.cmd 下游）与非 Windows 平台的信号处理均已内置适配。
 
 | 参数 | 说明 |
 |---|---|
