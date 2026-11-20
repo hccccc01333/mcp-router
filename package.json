@@ -17,6 +17,7 @@
     "dev": "tsx src/index.ts",
     "smoke": "tsx scripts/smoke.ts",
     "e2e": "tsx scripts/e2e.ts",
+    "e2e:http": "tsx scripts/e2e-http.ts",
     "bench": "tsx scripts/bench.ts"
   },
   "dependencies": {

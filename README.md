@@ -150,7 +150,7 @@ PASS third-party downstream aggregated into shared catalog
 
 这里还顺带验证了：**5 个真实下游聚合出 54 个工具，TraeCode 仍只见 5 个元工具**——突破了 40 上限。
 
-`npm run smoke`（内存协议链路 + 真实 localhost SSE/Streamable HTTP 链路 + 失败清理/关闭竞态/.cmd 包装回归） 27/27 通过;`npm run e2e` 验证 Agent 关闭 stdio 后路由**优雅退出(code 0)且子进程全部回收**（无孤儿进程）。
+`npm run smoke`（内存协议链路 + 真实 localhost SSE/Streamable HTTP 链路 + 失败清理/关闭竞态/.cmd 包装回归） 27/27 通过;`npm run e2e` 验证 Agent 关闭 stdio 后路由**优雅退出(code 0)且子进程全部回收**（无孤儿进程）;`npm run e2e:http` 验证 HTTP 模式全链路（initialize→search→execute、token 401 拦截、CORS 预检、healthz、405 规范行为、终止退出）。
 
 ---
 
@@ -213,6 +213,12 @@ npm run build
 {
   "timeouts": { "connectMs": 30000, "callMs": 90000 },
   "maxResultChars": 24000,
+  // 可选: HTTP 对上游提供服务的监听设置(也可全部用命令行参数覆盖)
+  "http": {
+    "host": "0.0.0.0",          // 监听地址;缺省 127.0.0.1
+    "port": 7800,               // 缺省 7800
+    "authToken": "${MCP_ROUTER_TOKEN}"  // 可选校验令牌;未设置不校验,支持 ${ENV} 展开
+  },
   "mcpServers": {
     "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] },
     "remote": { "url": "https://your-host/mcp", "headers": { "Authorization": "Bearer ${TOKEN}" } },
@@ -224,6 +230,55 @@ npm run build
 - **stdio / HTTP / SSE 三种下游**：`command` 走 stdio；`url` 缺省走 Streamable HTTP；`"type": "sse"` 走旧版 HTTP+SSE（2024-11-05 协议，兼容未升级的老服务器；也可显式写 `"type": "http"` / `"streamable-http"` / `"stdio"`）
 - **环境变量展开**：`${ENV_NAME}` 从环境读取，密钥不落盘
 - **独立超时 + 失败重建**、**结果截断**（应对官方"大型响应会被裁剪"的第二层限制）；工具调用失败时自动断开重连并重试一次——注意**非幂等工具存在被重复执行的可能**
+
+## HTTP 模式（局域网访问）
+
+除了默认的 stdio，Router 还能以 **Streamable HTTP（2025-03-26 协议）** 对上游提供服务，局域网内任何支持该协议的客户端（TraeCode、Claude Code、Cursor、Cline、MCP Inspector 等）都可以通过 URL 调用：
+
+```jsonc
+// 客户端接入配置(以 TraeCode 为例)
+{
+  "mcpServers": {
+    "mcp-router": { "url": "http://192.168.x.x:7800/mcp" }
+  }
+}
+```
+
+### 启动方式
+
+双击仓库根目录的 `start-http.bat`（等价于手动执行）：
+
+```bash
+node dist/index.js --transport http --host 0.0.0.0 --port 7800 --config mcp-router.config.json
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--transport stdio\|http\|both` | 对上游的服务方式，默认 `stdio`（与旧版行为完全一致） |
+| `--host` | HTTP 监听地址，默认 `127.0.0.1`；局域网访问需 `0.0.0.0` |
+| `--port` | HTTP 端口，默认 `7800` |
+| `--auth-token` | 可选校验令牌，未设置不校验；也可写入配置文件 `http.authToken` |
+
+- **`both` 模式**：stdio 与 HTTP 同时提供服务，共享同一份下游连接池与工具目录——TraeCode 走 stdio、其他机器走 HTTP，互不干扰。注意：stdio 客户端（Agent）断开会连带退出 HTTP 服务，常驻服务请用 `http` 模式独立进程
+- **健康探活**：`GET /healthz` 返回版本 / 运行时长 / 下游数 / 工具数（不受 token 保护，无敏感信息）
+- **首次启动 Windows 防火墙放行提示**属正常，勾选"专用网络"允许即可
+
+### Token 校验（默认关闭）
+
+设置 `--auth-token <你的密钥>`（或配置文件 `http.authToken`，支持 `${ENV}` 环境变量展开避免明文落盘）后，未携带或携带错误 token 的请求一律返回 **HTTP 401**。客户端传 token 支持三种方式任选其一：
+
+1. 请求头 `Authorization: Bearer <token>`（标准）
+2. 请求头 `X-MCP-Token: <token>`（部分客户端只支持自定义 header）
+3. URL 查询参数 `http://host:7800/mcp?token=<token>`（兜底：只能填 URL 的客户端）
+
+校验使用恒定时间比较，防时序侧信道。注意 token 仅校验接入身份，**建议只在可信局域网使用**。
+
+### 兼容性设计
+
+- stateless 会话（无 `mcp-session-id`），实现最简、客户端零感知；`GET`/`DELETE /mcp` 按规范返回 405
+- POST 到**任意路径**都按 MCP 请求处理，兼容 URL 少写 `/mcp` 的客户端
+- 响应自带 CORS 头并处理 `OPTIONS` 预检，浏览器/网页类客户端可直接连
+- 不支持旧版 SSE 协议（2024-11-05）客户端；主流客户端均已支持 Streamable HTTP
 
 ## 元工具
 

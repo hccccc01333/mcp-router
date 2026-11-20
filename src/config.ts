@@ -22,10 +22,23 @@ export interface HttpDownstream {
 
 export type DownstreamSpec = StdioDownstream | HttpDownstream;
 
+/**
+ * HTTP 对外服务配置(仅对上游生效;下游连接类型见 DownstreamSpec):
+ * - host 监听地址,默认由入口层决定(127.0.0.1)
+ * - port 监听端口,默认 7800
+ * - authToken 可选校验令牌;未设置时不校验。支持 ${ENV} 环境变量展开,密钥不落盘
+ */
+export interface HttpListenConfig {
+  host?: string;
+  port?: number;
+  authToken?: string;
+}
+
 export interface RouterConfig {
   mcpServers: Record<string, DownstreamSpec>;
   timeouts: { connectMs: number; callMs: number };
   maxResultChars: number;
+  http?: HttpListenConfig;
 }
 
 export function errMsg(e: unknown): string {
@@ -158,5 +171,31 @@ export function loadConfig(explicitPath?: string): RouterConfig {
   if (typeof root.maxResultChars === "number" && root.maxResultChars >= 1000) {
     maxResultChars = root.maxResultChars;
   }
-  return { mcpServers, timeouts, maxResultChars };
+  let http: HttpListenConfig | undefined;
+  if (root.http !== undefined) {
+    if (typeof root.http !== "object" || root.http === null) {
+      throw new Error(`router config ${path}: "http" must be an object`);
+    }
+    const h = root.http as Record<string, unknown>;
+    http = {};
+    if (h.host !== undefined) {
+      if (typeof h.host !== "string" || h.host.length === 0) {
+        throw new Error(`router config ${path}: http.host must be a non-empty string`);
+      }
+      http.host = h.host;
+    }
+    if (h.port !== undefined) {
+      if (typeof h.port !== "number" || !Number.isInteger(h.port) || h.port < 1 || h.port > 65535) {
+        throw new Error(`router config ${path}: http.port must be an integer in [1, 65535]`);
+      }
+      http.port = h.port;
+    }
+    if (h.authToken !== undefined) {
+      if (typeof h.authToken !== "string" || h.authToken.length === 0) {
+        throw new Error(`router config ${path}: http.authToken must be a non-empty string`);
+      }
+      http.authToken = expandEnvVars(h.authToken);
+    }
+  }
+  return { mcpServers, timeouts, maxResultChars, http };
 }
