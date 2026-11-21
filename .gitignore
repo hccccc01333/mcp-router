@@ -3,8 +3,6 @@ dist/
 *.log
 mcp-router.config.json
 .screenshots/
-# 系统垃圾文件(macOS / Windows 资源管理器产物)
 .DS_Store
 Thumbs.db
 desktop.ini
-
