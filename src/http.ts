@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { networkInterfaces } from "node:os";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { ROUTER_VERSION } from "./config.js";
+import { log } from "./log.js";
 import { createRouterServer, type RouterContext } from "./server.js";
 
 /**
@@ -97,6 +98,10 @@ export function startHttpServer(opts: StartHttpOptions): Promise<HttpServerHandl
   const startedAt = Date.now();
 
   const server = createServer((req, res) => {
+    // 连接级 error 静默:Ctrl+C / 客户端断开 / closeAllConnections 强断时的
+    // ECONNRESET / EPIPE 属正常关闭路径,不挂监听会刷未处理错误堆栈
+    req.on("error", () => {});
+    res.on("error", () => {});
     // 顶层兜底:任何同步异常(如畸形请求行)只回应错误,绝不能变成 uncaughtException 杀掉整个进程
     // —— stdio 侧(both 模式)或下游子进程都依赖本进程存活
     try {
@@ -113,7 +118,7 @@ export function startHttpServer(opts: StartHttpOptions): Promise<HttpServerHandl
       const finishLog = (): void => {
         const ms = Date.now() - started;
         // 日志只记 pathname 不记 query:?token= 传参时避免把校验令牌写进日志
-        console.error(`[mcp-router] http ${req.method} ${url.pathname} -> ${res.statusCode} (${ms}ms)`);
+        log(`[mcp-router] http ${req.method} ${url.pathname} -> ${res.statusCode} (${ms}ms)`);
       };
       res.on("finish", finishLog);
 
@@ -157,13 +162,22 @@ export function startHttpServer(opts: StartHttpOptions): Promise<HttpServerHandl
 
       reply404(res);
     } catch (e) {
-      console.error(`[mcp-router] http handler crashed (request rejected): ${String(e)}`);
+      log(`[mcp-router] http handler crashed (request rejected): ${String(e)}`);
       if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" });
       try {
         res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32603, message: "internal error" }, id: null }));
       } catch {
         // 响应已不可写,忽略
       }
+    }
+  });
+
+  // 畸形/恶意客户端请求(如发送非法 HTTP):按规范回应 400 后断开,不刷错误堆栈
+  server.on("clientError", (_err, socket) => {
+    if (socket.writable) {
+      socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+    } else {
+      socket.destroy();
     }
   });
 
@@ -180,13 +194,13 @@ export function startHttpServer(opts: StartHttpOptions): Promise<HttpServerHandl
       }
     });
     server.listen(port, host, () => {
-      console.error(`[mcp-router] v${ROUTER_VERSION} http listening on ${host}:${port}`);
+      log(`[mcp-router] v${ROUTER_VERSION} http listening on ${host}:${port}`);
       if (authEnabled) {
-        console.error("[mcp-router] token 校验已启用: 客户端需携带 Authorization: Bearer <token> / X-MCP-Token 或 URL ?token=");
+        log("[mcp-router] token 校验已启用: 客户端需携带 Authorization: Bearer <token> / X-MCP-Token 或 URL ?token=");
       }
       const ips = host === "0.0.0.0" ? localIps() : [host];
       for (const ip of ips) {
-        console.error(`[mcp-router] 客户端接入: ${authEnabled ? `${ip}:${port}/mcp?token=<你的token>` : `http://${ip}:${port}/mcp`}`);
+        log(`[mcp-router] 客户端接入: ${authEnabled ? `${ip}:${port}/mcp?token=<你的token>` : `http://${ip}:${port}/mcp`}`);
       }
       resolve({
         host,
@@ -226,7 +240,7 @@ function handleMcpRequest(req: IncomingMessage, res: ServerResponse, ctx: Router
       } catch {
         // 连接已断开,无法写出响应,忽略
       }
-      console.error(`[mcp-router] http request handling failed: ${String(e)}`);
+      log(`[mcp-router] http request handling failed: ${String(e)}`);
     }
   })();
 }

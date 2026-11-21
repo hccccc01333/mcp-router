@@ -150,7 +150,7 @@ PASS third-party downstream aggregated into shared catalog
 
 这里还顺带验证了：**5 个真实下游聚合出 54 个工具，TraeCode 仍只见 5 个元工具**——突破了 40 上限。
 
-`npm run smoke`（内存协议链路 + 真实 localhost SSE/Streamable HTTP 链路 + 失败清理/关闭竞态/.cmd 包装回归） 27/27 通过;`npm run e2e` 验证 Agent 关闭 stdio 后路由**优雅退出(code 0)且子进程全部回收**（无孤儿进程）;`npm run e2e:http` 验证 HTTP 模式全链路（initialize→search→execute、token 401 拦截、CORS 预检、healthz、405 规范行为、终止退出）。
+`npm run smoke`（内存协议链路 + 真实 localhost SSE/Streamable HTTP 链路 + 失败清理/关闭竞态/.cmd 包装回归） 34/34 通过;`npm run e2e` 验证 Agent 关闭 stdio 后路由**优雅退出(code 0)且子进程全部回收**（无孤儿进程）;`npm run e2e:http` 验证 HTTP 模式全链路（initialize→search→execute、token 401 拦截、CORS 预检、healthz、405 规范行为、终止退出）。
 
 ---
 
@@ -258,12 +258,14 @@ node dist/index.js --transport http --host 0.0.0.0 --port 7800 --config mcp-rout
 
 | 参数 | 说明 |
 |---|---|
-| `--transport stdio\|http\|both` | 对上游的服务方式，默认 `stdio`（与旧版行为完全一致） |
+| `--transport stdio\|http\|both` | 对上游的服务方式，默认 `stdio`（与旧版行为完全一致）；`both` 不推荐，见下方说明 |
 | `--host` | HTTP 监听地址，默认 `127.0.0.1`；局域网访问需 `0.0.0.0` |
 | `--port` | HTTP 端口，默认 `7800` |
 | `--auth-token` | 可选校验令牌，未设置不校验；也可写入配置文件 `http.authToken` |
 
-- **`both` 模式**：stdio 与 HTTP 同时提供服务，共享同一份下游连接池与工具目录——TraeCode 走 stdio、其他机器走 HTTP，互不干扰。注意：stdio 客户端（Agent）断开会连带退出 HTTP 服务，常驻服务请用 `http` 模式独立进程
+- **`both` 模式（不推荐）**：同一个进程内同时提供 stdio 与 HTTP 两条传输，共享同一份下游连接池与工具目录。不推荐的原因：① 二者生命周期绑定，Ctrl+C、关闭窗口、Agent 断开 stdin 都会退出整个进程（含全部下游），无法只退其中一条；② stdio 是"被客户端拉起的子进程"通道，手动在终端启动后 AI 客户端连不上它的 stdio（客户端只会自己另起一个进程），且在终端误触 stdin EOF（Ctrl+D / Ctrl+Z+Enter）会连带停掉 HTTP。**常驻服务请用 `http`，Agent 调用请用默认 `stdio`**
+- **需要"关掉 HTTP 不影响 stdio"时**：请用两个独立进程——常驻服务跑 `--transport http`（`start-http.bat` / `start-http.sh`），TraeCode 用 `--transport stdio`（由 Agent 自动拉起）。两个进程各自持有独立的下游连接（同一下游会被启动两份），互不影响退出
+- **退出行为**：任意模式收到 Ctrl+C / SIGTERM / 关闭窗口都走统一优雅退出（关闭监听 + 回收全部下游子进程，5 秒兜底强退）；`stdio` / `both` 模式下 Agent 关闭 stdin 同样触发优雅退出
 - **健康探活**：`GET /healthz` 返回版本 / 运行时长 / 下游数 / 工具数（不受 token 保护，无敏感信息）
 - **首次启动 Windows 防火墙放行提示**属正常，勾选"专用网络"允许即可
 

@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { log } from "./log.js";
 
 export const ROUTER_VERSION = "0.1.0";
 
@@ -174,7 +175,7 @@ export function loadConfig(explicitPath?: string): RouterConfig {
     mcpServers[name] = expandSpec(parseSpec(name, raw));
   }
   if (Object.keys(mcpServers).length === 0) {
-    console.error(`[mcp-router] warning: no downstream servers configured in ${path}`);
+    log(`[mcp-router] warning: no downstream servers configured in ${path}`);
   }
   const timeouts = { connectMs: 15000, callMs: 90000 };
   if (typeof root.timeouts === "object" && root.timeouts !== null) {
