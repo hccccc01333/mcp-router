@@ -12,8 +12,9 @@ import type { IncomingMessage, Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { errMsg, loadConfig } from "../src/config.js";
+import { errMsg, expandRequiredEnvVars, loadConfig } from "../src/config.js";
 import { Downstream } from "../src/downstream.js";
+import { startHttpServer } from "../src/http.js";
 import { ToolRegistry } from "../src/registry.js";
 import { META_TOOL_NAMES, createRouterServer } from "../src/server.js";
 import { UsageStats } from "../src/stats.js";
@@ -521,6 +522,94 @@ async function main(): Promise<void> {
     );
     await cmdDown.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+
+  // --- http.authToken 环境变量展开:未设置/为空必须报错,不能变成字面量或空串 ---
+  {
+    const envName = "MCP_ROUTER_SMOKE_TOKEN";
+    const before = process.env[envName];
+    delete process.env[envName];
+    const ref = "${" + envName + "}";
+    let unsetRejected = false;
+    try {
+      expandRequiredEnvVars(ref, "test token");
+    } catch (e) {
+      unsetRejected = errMsg(e).includes("unset environment variable");
+    }
+    check("unresolved ${ENV} token is rejected instead of becoming a literal secret", unsetRejected);
+
+    process.env[envName] = "";
+    let emptyRejected = false;
+    try {
+      expandRequiredEnvVars(ref, "test token");
+    } catch (e) {
+      emptyRejected = errMsg(e).includes("must not be empty");
+    }
+    check("empty ${ENV} token is rejected instead of silently disabling auth", emptyRejected);
+
+    if (before === undefined) delete process.env[envName];
+    else process.env[envName] = before;
+  }
+
+  // --- tools/call 超时不得重连重试(否则非幂等工具被重复执行) ---
+  {
+    let calls = 0;
+    const freshTransport = (): Transport => {
+      const srv = new McpServer({ name: "slow-echo", version: "0.1.0" });
+      srv.registerTool("slow", { inputSchema: {} }, async () => {
+        calls++;
+        await sleep(300);
+        return { content: [{ type: "text", text: "done" }] };
+      });
+      const [a, b] = InMemoryTransport.createLinkedPair();
+      void srv.connect(a);
+      return b;
+    };
+    const timed = new Downstream("slow", { command: "noop" });
+    (timed as unknown as { buildTransport: () => Transport }).buildTransport = freshTransport;
+    let timeoutMsg = "";
+    try {
+      await timed.callTool(50, "slow", {});
+    } catch (e) {
+      timeoutMsg = errMsg(e);
+    }
+    check(
+      "tool call timeout is not retried (no duplicate side effects)",
+      timeoutMsg.includes("timed out") && calls === 1,
+      `calls=${calls}, err=${timeoutMsg}`
+    );
+    await timed.close();
+  }
+
+  // --- 无鉴权 HTTP 服务不开放 CORS,防止任意网页跨源调用本机工具 ---
+  {
+    const probe = createServer();
+    const freePort = await new Promise<number>((resolve) => {
+      probe.listen(0, "127.0.0.1", () => {
+        const port = (probe.address() as { port: number }).port;
+        probe.close(() => resolve(port));
+      });
+    });
+    const openCtx = {
+      config,
+      downstreams: new Map<string, Downstream>(),
+      registry: new ToolRegistry(),
+      warmup: Promise.resolve(),
+      stats,
+    };
+    const handle = await startHttpServer({ ctx: openCtx, host: "127.0.0.1", port: freePort });
+    const preflight = await fetch(`http://127.0.0.1:${freePort}/mcp`, {
+      method: "OPTIONS",
+      headers: { Origin: "https://evil.example" },
+    });
+    check(
+      "no-auth http server sends no CORS headers to cross-origin pages",
+      preflight.status === 204 && preflight.headers.get("access-control-allow-origin") === null,
+      `status=${preflight.status}, acao=${preflight.headers.get("access-control-allow-origin")}`
+    );
+    const health = await fetch(`http://127.0.0.1:${freePort}/healthz`);
+    check("no-auth loopback server healthz reports auth=false", ((await health.json()) as { auth?: boolean }).auth === false);
+    await handle.close();
   }
 
   console.log(`\n${passed} passed, ${failures.length} failed`);

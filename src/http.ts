@@ -12,6 +12,8 @@ import { createRouterServer, type RouterContext } from "./server.js";
  * (下游连接池 / 工具目录 / 统计),因此与 stdio 传输可并存且零相互影响。
  */
 
+// 仅在启用鉴权时发送 CORS 头:无鉴权模式(仅允许回环监听)若开放 "*",
+// 任意网页都能跨源调用本机下游工具;启用鉴权后跨源请求必须携带令牌,风险可控。
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, GET, DELETE, OPTIONS",
@@ -25,7 +27,8 @@ const CORS_HEADERS: Record<string, string> = {
 // 按 MCP 请求处理的 HTTP 方法(目前仅 POST;进入此分支的请求做 token 校验)
 const MCP_HTTP_METHODS = new Set(["POST"]);
 
-function applyCors(res: ServerResponse): void {
+function applyCors(res: ServerResponse, authEnabled: boolean): void {
+  if (!authEnabled) return;
   for (const [k, v] of Object.entries(CORS_HEADERS)) res.setHeader(k, v);
 }
 
@@ -105,7 +108,7 @@ export function startHttpServer(opts: StartHttpOptions): Promise<HttpServerHandl
     // 顶层兜底:任何同步异常(如畸形请求行)只回应错误,绝不能变成 uncaughtException 杀掉整个进程
     // —— stdio 侧(both 模式)或下游子进程都依赖本进程存活
     try {
-      applyCors(res);
+      applyCors(res, authEnabled);
       const started = Date.now();
       let url: URL;
       try {

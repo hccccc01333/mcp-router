@@ -8,14 +8,33 @@ import { ToolRegistry } from "./registry.js";
 import { createRouterServer, type RouterContext } from "./server.js";
 import { UsageStats } from "./stats.js";
 
-function parseFlag(flag: string): string | undefined {
+const KNOWN_FLAGS = new Set(["--config", "-c", "--transport", "--host", "--port", "--auth-token", "--help", "-h"]);
+
+/**
+ * 需要显式取值的 flag:缺值、空值或值恰好是另一个已知 flag 时直接报错。
+ * 关键场景:--auth-token 写在末尾却没给值,旧逻辑会静默返回 undefined →
+ * 鉴权被关闭而用户以为已开启(局域网模式下等于裸奔)。
+ * 只拒绝"已知 flag",因此以 - 开头的合法令牌(如 base64url)仍可使用。
+ */
+function requireFlag(flag: string): string | undefined {
   const argv = process.argv.slice(2);
   const i = argv.indexOf(flag);
-  return i >= 0 ? argv[i + 1] : undefined;
+  if (i < 0) return undefined;
+  const value = argv[i + 1];
+  if (value === undefined || value.length === 0 || KNOWN_FLAGS.has(value)) {
+    throw new Error(`${flag} 需要一个非空的值 (got ${JSON.stringify(value)})`);
+  }
+  return value;
 }
 
 function hasFlag(flag: string): boolean {
   return process.argv.slice(2).includes(flag);
+}
+
+// 只有回环地址允许无鉴权监听;0.0.0.0 / 网卡 IP 必须显式启用 token。
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"]);
+function isLoopback(host: string): boolean {
+  return LOOPBACK_HOSTS.has(host.toLowerCase());
 }
 
 function printUsage(): void {
@@ -27,16 +46,16 @@ function printUsage(): void {
 选项:
   --config, -c <path>       配置文件路径 (默认: ./mcp-router.config.json, 或环境变量 MCP_ROUTER_CONFIG)
   --transport <mode>        对上游提供服务的方式: stdio | http | both (默认: stdio; both 不推荐, 见 README)
-  --host <addr>             HTTP 监听地址 (默认: 127.0.0.1; 局域网访问需 0.0.0.0)
+  --host <addr>             HTTP 监听地址 (默认: 127.0.0.1; 局域网访问需 0.0.0.0,此时必须启用鉴权)
   --port <n>                HTTP 监听端口 (默认: 7800)
-  --auth-token <token>      HTTP 校验令牌; 未设置时不校验。也可写入配置文件 http.authToken (支持 \${ENV} 展开)
+  --auth-token <token>      HTTP 校验令牌; 回环地址可省略,非回环必填。也可写入配置文件 http.authToken (支持 \${ENV} 展开)
   --help, -h                显示本帮助
 
 示例:
   stdio (默认, 与旧版完全一致):
     node dist/index.js --config mcp-router.config.json
-  HTTP 局域网服务:
-    node dist/index.js --transport http --host 0.0.0.0 --port 7800
+  HTTP 局域网服务 (非回环地址必须带 token):
+    node dist/index.js --transport http --host 0.0.0.0 --port 7800 --auth-token <你的密钥>
   HTTP + 校验令牌:
     node dist/index.js --transport http --auth-token my-secret
   stdio 与 HTTP 同时提供 (共享下游连接池; 不推荐: 生命周期绑定, 见 README):
@@ -72,17 +91,23 @@ async function main(): Promise<void> {
     printUsage();
     return;
   }
-  const config = loadConfig(parseFlag("--config") ?? parseFlag("-c"));
+  const config = loadConfig(requireFlag("--config") ?? requireFlag("-c"));
 
-  const transport = parseFlag("--transport") ?? "stdio";
+  const transport = requireFlag("--transport") ?? "stdio";
   if (transport !== "stdio" && transport !== "http" && transport !== "both") {
     throw new Error(`--transport 只支持 stdio | http | both (got ${JSON.stringify(transport)})`);
   }
 
-  const host = parseFlag("--host") ?? config.http?.host ?? "127.0.0.1";
-  const authToken = parseFlag("--auth-token") ?? config.http?.authToken;
+  const host = requireFlag("--host") ?? config.http?.host ?? "127.0.0.1";
+  const authToken = requireFlag("--auth-token") ?? config.http?.authToken;
+  if (transport !== "stdio" && !isLoopback(host) && !authToken) {
+    throw new Error(
+      `--host ${host} 不是本机回环地址,必须启用鉴权:传 --auth-token <token> 或配置 http.authToken。` +
+        "无鉴权的 HTTP 服务只能监听 127.0.0.1 / localhost / ::1。"
+    );
+  }
   let port = config.http?.port ?? 7800;
-  const portArg = parseFlag("--port");
+  const portArg = requireFlag("--port");
   if (portArg !== undefined) {
     const n = Number(portArg);
     if (!Number.isInteger(n) || n < 1 || n > 65535) {

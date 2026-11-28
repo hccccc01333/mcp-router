@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { log } from "./log.js";
 
-export const ROUTER_VERSION = "0.1.0";
+export const ROUTER_VERSION = "0.2.0";
 
 /** 两种下游共有的可选字段 */
 interface CommonDownstream {
@@ -57,6 +57,23 @@ export function errMsg(e: unknown): string {
 
 export function expandEnvVars(value: string): string {
   return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (raw, name: string) => process.env[name] ?? raw);
+}
+
+const ENV_REF = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/;
+
+/**
+ * 密钥类字段的环境变量展开:未设置的变量会保留字面量 ${VAR},空变量会变成空串,
+ * 两者都不能静默通过——否则鉴权会用一个可预测的"假令牌"或直接被关闭。
+ */
+export function expandRequiredEnvVars(value: string, label: string): string {
+  const expanded = expandEnvVars(value);
+  if (ENV_REF.test(expanded)) {
+    throw new Error(`${label} references an unset environment variable in ${JSON.stringify(value)}`);
+  }
+  if (expanded.length === 0) {
+    throw new Error(`${label} must not be empty after environment expansion`);
+  }
+  return expanded;
 }
 
 function expandSpec(spec: DownstreamSpec): DownstreamSpec {
@@ -210,7 +227,7 @@ export function loadConfig(explicitPath?: string): RouterConfig {
       if (typeof h.authToken !== "string" || h.authToken.length === 0) {
         throw new Error(`router config ${path}: http.authToken must be a non-empty string`);
       }
-      http.authToken = expandEnvVars(h.authToken);
+      http.authToken = expandRequiredEnvVars(h.authToken, `router config ${path}: http.authToken`);
     }
   }
   return { mcpServers, timeouts, maxResultChars, http };

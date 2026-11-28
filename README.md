@@ -9,10 +9,11 @@
 解法**不是**"把 40 改成 400"，而是 `全部工具 → 智能检索 → 动态暴露 → 只给 Agent 当前需要的工具`。
 
 ```text
-✅ Build  0 errors
-✅ Smoke  27/27
-✅ E2E    7/7   (Windows 真实进程链路)
-✅ Bench  1000 tools → ~0.6ms avg search
+✅ Build     0 errors
+✅ Smoke     39/39
+✅ E2E       7/7    (Windows 真实进程链路)
+✅ E2E:HTTP  19/19  (Streamable HTTP + token + fail-fast + 优雅退出)
+✅ Bench     1000 tools → ~0.6ms avg search
 ```
 
 GitHub: https://github.com/hccccc01333/mcp-router
@@ -217,7 +218,7 @@ npm run build
   "http": {
     "host": "0.0.0.0",          // 监听地址;缺省 127.0.0.1
     "port": 7800,               // 缺省 7800
-    "authToken": "${MCP_ROUTER_TOKEN}"  // 可选校验令牌;未设置不校验,支持 ${ENV} 展开
+    "authToken": "${MCP_ROUTER_TOKEN}"  // 回环地址可省略;非回环必填。支持 ${ENV} 展开,变量未设置/为空会直接报错
   },
   "mcpServers": {
     "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] },
@@ -230,8 +231,8 @@ npm run build
 
 - **stdio / HTTP / SSE 三种下游**：`command` 走 stdio；`url` 缺省走 Streamable HTTP；`"type": "sse"` 走旧版 HTTP+SSE（2024-11-05 协议，兼容未升级的老服务器；也可显式写 `"type": "http"` / `"streamable-http"` / `"stdio"`）
 - **按需禁用**：`"disabled": true` 显式跳过该下游——不连接、不加载工具，适合临时停用某个 server 而不删配置（默认 `false`）；`list_servers` 中显示为 `disabled` 状态，catalog 统计会排除它
-- **环境变量展开**：`${ENV_NAME}` 从环境读取，密钥不落盘
-- **独立超时 + 失败重建**、**结果截断**（应对官方"大型响应会被裁剪"的第二层限制）；工具调用失败时自动断开重连并重试一次——注意**非幂等工具存在被重复执行的可能**
+- **环境变量展开**：`${ENV_NAME}` 从环境读取，密钥不落盘；密钥字段若变量未设置或为空会直接报错，避免生成可预测的"假令牌"或静默关闭鉴权
+- **独立超时 + 结果截断**（应对官方"大型响应会被裁剪"的第二层限制）；仅当下游连接已关闭时重连并重试一次，超时和业务错误不重试，避免非幂等工具被重复执行
 
 ## HTTP 模式（局域网访问）
 
@@ -241,17 +242,24 @@ npm run build
 // 客户端接入配置(以 TraeCode 为例)
 {
   "mcpServers": {
-    "mcp-router": { "url": "http://192.168.x.x:7800/mcp" }
+    "mcp-router": { "url": "http://192.168.x.x:7800/mcp?token=你的密钥" }
   }
 }
 ```
 
 ### 启动方式
 
-Windows 下双击仓库根目录的 `start-http.bat`，Linux / macOS 下运行 `./start-http.sh`（或直接执行等价命令）：
+Windows 下双击仓库根目录的 `start-http.bat`，Linux / macOS 下运行 `./start-http.sh`（或直接执行等价命令）。两个脚本都绑定 `0.0.0.0`，**要求先设置 `MCP_ROUTER_TOKEN`**，否则会给出提示并退出：
 
 ```bash
-node dist/index.js --transport http --host 0.0.0.0 --port 7800 --config mcp-router.config.json
+export MCP_ROUTER_TOKEN='你的密钥'     # Windows: set MCP_ROUTER_TOKEN=你的密钥
+node dist/index.js --transport http --host 0.0.0.0 --port 7800 --config mcp-router.config.json --auth-token "$MCP_ROUTER_TOKEN"
+```
+
+只想在本机用时不需要令牌，用回环地址即可：
+
+```bash
+node dist/index.js --transport http --host 127.0.0.1 --port 7800 --config mcp-router.config.json
 ```
 
 > Router 本身与全部功能（stdio 下游、HTTP/SSE 下游、HTTP 对外服务、token 校验）在 Windows / Linux / macOS 上均可运行；Windows 特有的 `cmd.exe` 包装（npx/.cmd 下游）与非 Windows 平台的信号处理均已内置适配。
@@ -259,9 +267,9 @@ node dist/index.js --transport http --host 0.0.0.0 --port 7800 --config mcp-rout
 | 参数 | 说明 |
 |---|---|
 | `--transport stdio\|http\|both` | 对上游的服务方式，默认 `stdio`（与旧版行为完全一致）；`both` 不推荐，见下方说明 |
-| `--host` | HTTP 监听地址，默认 `127.0.0.1`；局域网访问需 `0.0.0.0` |
+| `--host` | HTTP 监听地址，默认 `127.0.0.1`；局域网访问需 `0.0.0.0`，此时必须启用鉴权 |
 | `--port` | HTTP 端口，默认 `7800` |
-| `--auth-token` | 可选校验令牌，未设置不校验；也可写入配置文件 `http.authToken` |
+| `--auth-token` | 校验令牌；回环地址可省略，非回环地址必填（缺值会直接报错，不会静默关闭鉴权）。也可写入配置文件 `http.authToken` |
 
 - **`both` 模式（不推荐）**：同一个进程内同时提供 stdio 与 HTTP 两条传输，共享同一份下游连接池与工具目录。不推荐的原因：① 二者生命周期绑定，Ctrl+C、关闭窗口、Agent 断开 stdin 都会退出整个进程（含全部下游），无法只退其中一条；② stdio 是"被客户端拉起的子进程"通道，手动在终端启动后 AI 客户端连不上它的 stdio（客户端只会自己另起一个进程），且在终端误触 stdin EOF（Ctrl+D / Ctrl+Z+Enter）会连带停掉 HTTP。**常驻服务请用 `http`，Agent 调用请用默认 `stdio`**
 - **需要"关掉 HTTP 不影响 stdio"时**：请用两个独立进程——常驻服务跑 `--transport http`（`start-http.bat` / `start-http.sh`），TraeCode 用 `--transport stdio`（由 Agent 自动拉起）。两个进程各自持有独立的下游连接（同一下游会被启动两份），互不影响退出
@@ -269,9 +277,9 @@ node dist/index.js --transport http --host 0.0.0.0 --port 7800 --config mcp-rout
 - **健康探活**：`GET /healthz` 返回版本 / 运行时长 / 下游数 / 工具数（不受 token 保护，无敏感信息）
 - **首次启动 Windows 防火墙放行提示**属正常，勾选"专用网络"允许即可
 
-### Token 校验（默认关闭）
+### Token 校验（回环可关，局域网必开）
 
-设置 `--auth-token <你的密钥>`（或配置文件 `http.authToken`，支持 `${ENV}` 环境变量展开避免明文落盘）后，未携带或携带错误 token 的请求一律返回 **HTTP 401**。客户端传 token 支持三种方式任选其一：
+监听回环地址时可以不设令牌；监听 `0.0.0.0` 或具体网卡 IP 时，必须通过 `--auth-token <你的密钥>` 或配置文件 `http.authToken` 启用鉴权，否则 Router 拒绝启动。`${ENV}` 环境变量展开可避免明文落盘，变量未设置或为空会直接报错（不会退化成可预测的字面量令牌或静默关闭鉴权）。启用后未携带或携带错误 token 的请求一律返回 **HTTP 401**。客户端传 token 支持三种方式任选其一：
 
 1. 请求头 `Authorization: Bearer <token>`（标准）
 2. 请求头 `X-MCP-Token: <token>`（部分客户端只支持自定义 header）
@@ -279,11 +287,13 @@ node dist/index.js --transport http --host 0.0.0.0 --port 7800 --config mcp-rout
 
 校验使用恒定时间比较，防时序侧信道。注意 token 仅校验接入身份，**建议只在可信局域网使用**。
 
+**浏览器/跨源说明**：只有启用鉴权时才会返回 CORS 头（含 `Access-Control-Allow-Origin: *`）；未启用鉴权的服务不发送任何 CORS 头，浏览器无法跨源调用本机工具。非浏览器客户端（TraeCode / Claude Code / Cursor / Cline 等）不受此影响。
+
 ### 兼容性设计
 
 - stateless 会话（无 `mcp-session-id`），实现最简、客户端零感知；`GET`/`DELETE /mcp` 按规范返回 405
 - POST 到**任意路径**都按 MCP 请求处理，兼容 URL 少写 `/mcp` 的客户端
-- 响应自带 CORS 头并处理 `OPTIONS` 预检，浏览器/网页类客户端可直接连
+- 启用鉴权时响应自带 CORS 头并处理 `OPTIONS` 预检，浏览器/网页类客户端可直接连；无鉴权模式不开放跨源
 - 不支持旧版 SSE 协议（2024-11-05）客户端；主流客户端均已支持 Streamable HTTP
 
 ## 元工具

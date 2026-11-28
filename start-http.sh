@@ -1,8 +1,8 @@
 #!/bin/sh
 # mcp-router HTTP server launcher (LAN access); Windows equivalent: start-http.bat
 # - listens on 0.0.0.0:7800, reachable at http://<your-ip>:7800/mcp
-# - token check is OFF by default; add --auth-token <secret> to enable
-#   (prefer config file http.authToken with ${ENV} expansion)
+# - token check is REQUIRED: this launcher binds 0.0.0.0 (LAN access),
+#   so set MCP_ROUTER_TOKEN before running (or invoke node directly with a config that sets http.authToken).
 # - health probe: http://127.0.0.1:7800/healthz
 cd -P "$(dirname "$0")" || exit 1
 
@@ -28,8 +28,16 @@ if [ ! -f mcp-router.config.json ]; then
     echo "[mcp-router] ERROR: mcp-router.config.json not found - copy examples/mcp-router.config.example.json, edit it, then run this script again." >&2
     exit 1
 fi
+if [ -z "${MCP_ROUTER_TOKEN:-}" ]; then
+    echo "[mcp-router] ERROR: MCP_ROUTER_TOKEN is not set." >&2
+    echo "[mcp-router]        This launcher binds 0.0.0.0 (LAN access), so a token is required." >&2
+    echo "[mcp-router]        Set it first, e.g.:  export MCP_ROUTER_TOKEN=your-secret" >&2
+    echo "[mcp-router]        Or run a loopback-only server with:" >&2
+    echo "[mcp-router]        node dist/index.js --transport http --host 127.0.0.1 --config mcp-router.config.json" >&2
+    exit 1
+fi
 
-node dist/index.js --transport http --host 0.0.0.0 --port 7800 --config mcp-router.config.json
+node dist/index.js --transport http --host 0.0.0.0 --port 7800 --config mcp-router.config.json --auth-token "$MCP_ROUTER_TOKEN"
 status=$?
 
 echo

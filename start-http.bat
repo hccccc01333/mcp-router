@@ -6,8 +6,8 @@ chcp 65001 >nul
 rem ================================================================
 rem  mcp-router HTTP server launcher (LAN access)
 rem  - listens on 0.0.0.0:7800, reachable at http://<your-ip>:7800/mcp
-rem  - token check is OFF by default; add --auth-token <secret> to enable
-rem    (prefer config file http.authToken with ${ENV} expansion)
+rem  - token check is REQUIRED: this launcher binds 0.0.0.0 (LAN access),
+rem    so set MCP_ROUTER_TOKEN before running (or invoke node directly with a config that sets http.authToken).
 rem  - health probe: http://127.0.0.1:7800/healthz
 rem ================================================================
 rem pushd instead of "cd /d": also supports UNC paths (auto-maps a temp drive)
@@ -49,8 +49,17 @@ if not exist "mcp-router.config.json" (
     pause
     exit /b 1
 )
+if not defined MCP_ROUTER_TOKEN (
+    echo [mcp-router] ERROR: MCP_ROUTER_TOKEN is not set.
+    echo [mcp-router]        This launcher binds 0.0.0.0 (LAN access), so a token is required.
+    echo [mcp-router]        Set it first, e.g.:  set MCP_ROUTER_TOKEN=your-secret
+    echo [mcp-router]        Or run a loopback-only server with:
+    echo [mcp-router]        node dist\index.js --transport http --host 127.0.0.1 --config mcp-router.config.json
+    pause
+    exit /b 1
+)
 
-node dist\index.js --transport http --host 0.0.0.0 --port 7800 --config mcp-router.config.json
+node dist\index.js --transport http --host 0.0.0.0 --port 7800 --config mcp-router.config.json --auth-token "%MCP_ROUTER_TOKEN%"
 
 echo.
 echo [mcp-router] server exited.

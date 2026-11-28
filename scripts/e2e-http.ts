@@ -4,6 +4,8 @@
  * token 校验(401)、healthz、CORS 预检、GET /mcp 405、优雅退出。
  */
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -11,7 +13,17 @@ import { META_TOOL_NAMES } from "../src/server.js";
 
 const ROOT = process.cwd();
 const ROUTER = path.join(ROOT, "dist", "index.js");
-const CONFIG = path.join(ROOT, "mcp-router.config.json");
+// 测试自带临时配置,不依赖被 .gitignore 的本地 mcp-router.config.json(fresh clone 直接可跑)
+const TMP_DIR = mkdtempSync(path.join(tmpdir(), "mcp-router-e2e-http-"));
+const CONFIG = path.join(TMP_DIR, "mcp-router.config.json");
+writeFileSync(
+  CONFIG,
+  JSON.stringify({
+    mcpServers: {
+      echo: { command: process.execPath, args: ["--import", "tsx", path.join(ROOT, "scripts", "echo-downstream.ts")] },
+    },
+  })
+);
 const TOKEN = "e2e-secret-token";
 const PORT = 7801 + Math.floor(Math.random() * 200);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -38,12 +50,32 @@ function bodyText(result: { content?: Array<{ type: string; text?: string }> }):
   return (result.content ?? []).map((b) => (b.type === "text" ? b.text ?? "" : "")).join("");
 }
 
+async function expectFatal(args: string[], hint: string): Promise<boolean> {
+  const child = spawn(process.execPath, [ROUTER, ...args], { stdio: ["ignore", "pipe", "pipe"] });
+  let err = "";
+  child.stderr.on("data", (chunk: Buffer) => {
+    err += chunk.toString();
+  });
+  const code = await new Promise<number | null>((resolve) => {
+    const timer = setTimeout(() => resolve(null), 10000);
+    child.once("exit", (c) => {
+      clearTimeout(timer);
+      resolve(c);
+    });
+  });
+  return code === 1 && err.includes(hint);
+}
+
 async function main(): Promise<void> {
   const child = spawn(
     process.execPath,
     [ROUTER, "--config", CONFIG, "--transport", "http", "--port", String(PORT), "--auth-token", TOKEN],
     { stdio: ["ignore", "pipe", "pipe"] }
   );
+  // 提前注册 exit 监听:启动失败时子进程可能在 finally 注册监听前就已退出,导致误报
+  const childExit = new Promise<number | null>((resolve) => {
+    child.once("exit", (code) => resolve(code));
+  });
   // stderr 同时转发与收集:收集用于验证"日志不回显校验令牌"
   let stderrBuf = "";
   child.stderr.on("data", (chunk: Buffer) => {
@@ -152,6 +184,16 @@ async function main(): Promise<void> {
     const serversText = bodyText(servers);
     check("list_servers over http reports connected downstream", serversText.includes("echo") && serversText.includes("connected"), serversText);
 
+    // 安全配置必须 fail-fast,而不是静默关闭鉴权或暴露到局域网
+    check(
+      "--auth-token with no value fails fast",
+      await expectFatal(["--config", CONFIG, "--transport", "http", "--auth-token"], "需要一个非空的值")
+    );
+    check(
+      "--host 0.0.0.0 without token fails fast",
+      await expectFatal(["--config", CONFIG, "--transport", "http", "--host", "0.0.0.0"], "必须启用鉴权")
+    );
+
     await client.close();
   } finally {
     // 优雅退出:SIGTERM(Windows 下 kill 不可靠,统一 taskkill 兜底前先尝试消息)
@@ -161,13 +203,14 @@ async function main(): Promise<void> {
     } else {
       child.kill("SIGTERM");
     }
-    const exit = await new Promise<number | null>((resolve) => {
-      const timer = setTimeout(() => resolve(null), 15000);
-      child.once("exit", (code) => {
-        clearTimeout(timer);
-        resolve(code);
-      });
-    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const exit = await Promise.race([
+      childExit,
+      new Promise<number | null>((resolve) => {
+        timer = setTimeout(() => resolve(null), 15000);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
     check("router http process tree is terminated", exit !== null, `exit=${exit}`);
 
     // 进程树死后端口必须释放(无残留监听)
@@ -182,6 +225,7 @@ async function main(): Promise<void> {
 
     // 日志脱敏:stderr 输出中不应出现 URL 查询串里的真实令牌
     check("router logs never echo the auth token from query strings", !stderrBuf.includes(`token=${TOKEN}`));
+    rmSync(TMP_DIR, { recursive: true, force: true });
   }
 
   console.log(`\n${passed} passed, ${failures.length} failed`);

@@ -170,17 +170,14 @@ export class Downstream {
     try {
       return await attempt();
     } catch (e) {
-      // 只有连接级失败(连接关闭/请求超时)才值得重连重试;
-      // 下游返回的业务错误(工具不存在/参数非法/内部错误等)说明连接健康,重试毫无意义,
-      // 还会关掉与另一条传输(如 both 模式的 stdio 调用)共用的连接,并可能让已产生副作用的工具重复执行
-      if (e instanceof McpError && e.code !== ErrorCode.ConnectionClosed && e.code !== ErrorCode.RequestTimeout) {
-        throw e;
-      }
-      if (this.client && !this.transportOverride) {
-        await this.close();
-        return attempt();
-      }
-      throw e;
+      // 只有"连接已关闭"这一种明确的连接级失败才重连重试一次。
+      // 请求超时由 withTimeout 抛普通 Error,下游业务错误通常是 McpError;
+      // 这两类都可能已经让工具在下游执行过,重试会让非幂等工具产生重复副作用,
+      // 还会关掉与另一条传输(both 模式)或其它并发 HTTP 请求共用的连接。
+      const retryable = e instanceof McpError && e.code === ErrorCode.ConnectionClosed;
+      if (!retryable || !this.client || this.transportOverride) throw e;
+      await this.close();
+      return attempt();
     }
   }
 
