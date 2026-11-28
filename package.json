@@ -1,6 +1,6 @@
 {
   "name": "mcp-router",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Aggregate many MCP servers behind four meta-tools so agents stay within tool-count limits",
   "type": "module",
@@ -17,6 +17,7 @@
     "dev": "tsx src/index.ts",
     "smoke": "tsx scripts/smoke.ts",
     "e2e": "tsx scripts/e2e.ts",
+    "e2e:http": "tsx scripts/e2e-http.ts",
     "bench": "tsx scripts/bench.ts"
   },
   "dependencies": {

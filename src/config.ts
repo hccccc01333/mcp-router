@@ -1,15 +1,25 @@
 import { readFileSync } from "node:fs";
+import { log } from "./log.js";
 
-export const ROUTER_VERSION = "0.1.0";
+export const ROUTER_VERSION = "0.2.0";
 
-export interface StdioDownstream {
+/** 两种下游共有的可选字段 */
+interface CommonDownstream {
+  /**
+   * 显式禁用:为 true 时运行时跳过该下游,不连接、不加载工具(默认 false)。
+   * 保留在 list_servers 输出中(status=disabled),方便确认配置被识别但未启用。
+   */
+  disabled?: boolean;
+}
+
+export interface StdioDownstream extends CommonDownstream {
   command: string;
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
 }
 
-export interface HttpDownstream {
+export interface HttpDownstream extends CommonDownstream {
   url: string;
   headers?: Record<string, string>;
   /**
@@ -22,10 +32,23 @@ export interface HttpDownstream {
 
 export type DownstreamSpec = StdioDownstream | HttpDownstream;
 
+/**
+ * HTTP 对外服务配置(仅对上游生效;下游连接类型见 DownstreamSpec):
+ * - host 监听地址,默认由入口层决定(127.0.0.1)
+ * - port 监听端口,默认 7800
+ * - authToken 可选校验令牌;未设置时不校验。支持 ${ENV} 环境变量展开,密钥不落盘
+ */
+export interface HttpListenConfig {
+  host?: string;
+  port?: number;
+  authToken?: string;
+}
+
 export interface RouterConfig {
   mcpServers: Record<string, DownstreamSpec>;
   timeouts: { connectMs: number; callMs: number };
   maxResultChars: number;
+  http?: HttpListenConfig;
 }
 
 export function errMsg(e: unknown): string {
@@ -34,6 +57,23 @@ export function errMsg(e: unknown): string {
 
 export function expandEnvVars(value: string): string {
   return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (raw, name: string) => process.env[name] ?? raw);
+}
+
+const ENV_REF = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/;
+
+/**
+ * 密钥类字段的环境变量展开:未设置的变量会保留字面量 ${VAR},空变量会变成空串,
+ * 两者都不能静默通过——否则鉴权会用一个可预测的"假令牌"或直接被关闭。
+ */
+export function expandRequiredEnvVars(value: string, label: string): string {
+  const expanded = expandEnvVars(value);
+  if (ENV_REF.test(expanded)) {
+    throw new Error(`${label} references an unset environment variable in ${JSON.stringify(value)}`);
+  }
+  if (expanded.length === 0) {
+    throw new Error(`${label} must not be empty after environment expansion`);
+  }
+  return expanded;
 }
 
 function expandSpec(spec: DownstreamSpec): DownstreamSpec {
@@ -84,11 +124,16 @@ function parseSpec(name: string, raw: unknown): DownstreamSpec {
       `mcpServers.${name}.type must be one of "stdio", "http", "streamable-http", "sse" (got ${JSON.stringify(s.type)})`
     );
   }
+  // disabled 默认 false(缺省不设字段);仅显式 true 才禁用,非法值拒绝而不是静默忽略
+  if (s.disabled !== undefined && typeof s.disabled !== "boolean") {
+    throw new Error(`mcpServers.${name}.disabled must be a boolean (got ${JSON.stringify(s.disabled)})`);
+  }
   if (typeof s.url === "string") {
     if (type === "stdio") {
       throw new Error(`mcpServers.${name} with type "stdio" must define "command", not "url"`);
     }
     const spec: HttpDownstream = { url: s.url };
+    if (s.disabled === true) spec.disabled = true;
     if (type === "sse") spec.type = "sse";
     const headers = stringMap(name, "headers", s.headers);
     if (headers) spec.headers = headers;
@@ -99,6 +144,7 @@ function parseSpec(name: string, raw: unknown): DownstreamSpec {
       throw new Error(`mcpServers.${name} with type "${type}" must define "url", not "command"`);
     }
     const spec: StdioDownstream = { command: s.command };
+    if (s.disabled === true) spec.disabled = true;
     if (s.args !== undefined) {
       if (!Array.isArray(s.args)) throw new Error(`mcpServers.${name}.args must be an array`);
       spec.args = s.args.map(String);
@@ -146,7 +192,7 @@ export function loadConfig(explicitPath?: string): RouterConfig {
     mcpServers[name] = expandSpec(parseSpec(name, raw));
   }
   if (Object.keys(mcpServers).length === 0) {
-    console.error(`[mcp-router] warning: no downstream servers configured in ${path}`);
+    log(`[mcp-router] warning: no downstream servers configured in ${path}`);
   }
   const timeouts = { connectMs: 15000, callMs: 90000 };
   if (typeof root.timeouts === "object" && root.timeouts !== null) {
@@ -158,5 +204,31 @@ export function loadConfig(explicitPath?: string): RouterConfig {
   if (typeof root.maxResultChars === "number" && root.maxResultChars >= 1000) {
     maxResultChars = root.maxResultChars;
   }
-  return { mcpServers, timeouts, maxResultChars };
+  let http: HttpListenConfig | undefined;
+  if (root.http !== undefined) {
+    if (typeof root.http !== "object" || root.http === null) {
+      throw new Error(`router config ${path}: "http" must be an object`);
+    }
+    const h = root.http as Record<string, unknown>;
+    http = {};
+    if (h.host !== undefined) {
+      if (typeof h.host !== "string" || h.host.length === 0) {
+        throw new Error(`router config ${path}: http.host must be a non-empty string`);
+      }
+      http.host = h.host;
+    }
+    if (h.port !== undefined) {
+      if (typeof h.port !== "number" || !Number.isInteger(h.port) || h.port < 1 || h.port > 65535) {
+        throw new Error(`router config ${path}: http.port must be an integer in [1, 65535]`);
+      }
+      http.port = h.port;
+    }
+    if (h.authToken !== undefined) {
+      if (typeof h.authToken !== "string" || h.authToken.length === 0) {
+        throw new Error(`router config ${path}: http.authToken must be a non-empty string`);
+      }
+      http.authToken = expandRequiredEnvVars(h.authToken, `router config ${path}: http.authToken`);
+    }
+  }
+  return { mcpServers, timeouts, maxResultChars, http };
 }

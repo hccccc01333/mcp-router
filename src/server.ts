@@ -71,8 +71,10 @@ export function createRouterServer(ctx: RouterContext): McpServer {
       const q = query.trim();
       if (!q) {
         const sample = all.slice(0, max).map(formatCard).join("\n");
+        // disabled 下游不加载工具,不参与 server 计数;list_servers 可查看被禁用的条目
+        const enabledServers = [...ctx.downstreams.values()].filter((d) => d.status !== "disabled").length;
         return text(
-          `Tool catalog: ${all.length} tools from ${ctx.downstreams.size} servers. Showing first ${Math.min(max, all.length)}; use keyword search for specific capabilities.\n\n${sample || "(no tools registered yet)"}`
+          `Tool catalog: ${all.length} tools from ${enabledServers} servers. Showing first ${Math.min(max, all.length)}; use keyword search for specific capabilities.\n\n${sample || "(no tools registered yet)"}`
         );
       }
       const hits = searchEntries(all, q).slice(0, max);

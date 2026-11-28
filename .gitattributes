@@ -1,0 +1,5 @@
+# Normalize line endings regardless of each contributor's autocrlf settings.
+# sh must stay LF-only (CRLF breaks /bin/sh with "^M" errors on Linux/macOS);
+# bat must stay CRLF (canonical for cmd batch files).
+*.sh text eol=lf
+*.bat text eol=crlf

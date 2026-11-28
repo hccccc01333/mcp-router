@@ -2,3 +2,7 @@ node_modules/
 dist/
 *.log
 mcp-router.config.json
+.screenshots/
+.DS_Store
+Thumbs.db
+desktop.ini

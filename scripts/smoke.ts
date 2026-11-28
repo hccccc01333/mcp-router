@@ -12,8 +12,9 @@ import type { IncomingMessage, Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { errMsg, loadConfig } from "../src/config.js";
+import { errMsg, expandRequiredEnvVars, loadConfig } from "../src/config.js";
 import { Downstream } from "../src/downstream.js";
+import { startHttpServer } from "../src/http.js";
 import { ToolRegistry } from "../src/registry.js";
 import { META_TOOL_NAMES, createRouterServer } from "../src/server.js";
 import { UsageStats } from "../src/stats.js";
@@ -89,6 +90,8 @@ async function main(): Promise<void> {
   const registry = new ToolRegistry();
   registry.replaceServer(downstream.name, tools);
   const downstreams = new Map([[downstream.name, downstream]]);
+  // 禁用下游也进托管列表:list_servers 应显示其 disabled 状态而不连接
+  downstreams.set("off-srv", new Downstream("off-srv", { command: "node", disabled: true }));
   const stats = new UsageStats();
   const router = createRouterServer({ config, downstreams, registry, warmup: Promise.resolve(), stats });
 
@@ -148,6 +151,7 @@ async function main(): Promise<void> {
   const servers = await client.callTool({ name: "list_servers", arguments: {} });
   const serversBody = bodyOf(servers);
   check("list_servers shows connected status", serversBody.includes("echo") && serversBody.includes("connected") && serversBody.includes("2 tools"), serversBody);
+  check("list_servers shows disabled status for skipped servers", serversBody.includes("off-srv") && serversBody.includes("disabled"), serversBody);
 
   const statsRes = await client.callTool({ name: "tool_stats", arguments: {} });
   const statsBody = bodyOf(statsRes);
@@ -367,6 +371,51 @@ async function main(): Promise<void> {
       protoKeys.length === 1 && protoKeys[0] === "__proto__" && protoEntry !== undefined && "command" in protoEntry && protoEntry.command === "node",
       JSON.stringify(protoKeys)
     );
+
+    // --- disabled 字段:默认 false,显式 true 才禁用,非法值拒绝 ---
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        mcpServers: {
+          on: { command: "node" },
+          off: { command: "node", disabled: true },
+          offUrl: { url: "https://example.com/mcp", disabled: true },
+        },
+      })
+    );
+    const disCfg = loadConfig(configPath);
+    check(
+      'config defaults disabled to false (field absent) when omitted',
+      disCfg.mcpServers.on.disabled === undefined,
+      JSON.stringify(disCfg.mcpServers.on)
+    );
+    check(
+      'config parses "disabled": true on both stdio and http specs',
+      disCfg.mcpServers.off.disabled === true && disCfg.mcpServers.offUrl.disabled === true,
+      JSON.stringify([disCfg.mcpServers.off, disCfg.mcpServers.offUrl])
+    );
+    writeFileSync(configPath, JSON.stringify({ mcpServers: { bad: { command: "node", disabled: "yes" } } }));
+    let disRejected = false;
+    try {
+      loadConfig(configPath);
+    } catch (e) {
+      disRejected = errMsg(e).includes("disabled");
+    }
+    check("config rejects non-boolean disabled values", disRejected);
+
+    // disabled 下游:不连接、调用被明确拒绝、close 不改变 disabled 状态
+    const disDown = new Downstream("off-srv", { command: "node", disabled: true });
+    check("disabled downstream starts in disabled status without connecting", disDown.status === "disabled", disDown.status);
+    let disErr = "";
+    try {
+      await disDown.listTools(500);
+    } catch (e) {
+      disErr = errMsg(e);
+    }
+    check("disabled downstream rejects listTools with clear error", disErr.includes("disabled"), disErr);
+    await disDown.close();
+    check("close() keeps disabled status intact", disDown.status === "disabled", disDown.status);
+
     rmSync(dir, { recursive: true, force: true });
   }
 
@@ -473,6 +522,94 @@ async function main(): Promise<void> {
     );
     await cmdDown.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+
+  // --- http.authToken 环境变量展开:未设置/为空必须报错,不能变成字面量或空串 ---
+  {
+    const envName = "MCP_ROUTER_SMOKE_TOKEN";
+    const before = process.env[envName];
+    delete process.env[envName];
+    const ref = "${" + envName + "}";
+    let unsetRejected = false;
+    try {
+      expandRequiredEnvVars(ref, "test token");
+    } catch (e) {
+      unsetRejected = errMsg(e).includes("unset environment variable");
+    }
+    check("unresolved ${ENV} token is rejected instead of becoming a literal secret", unsetRejected);
+
+    process.env[envName] = "";
+    let emptyRejected = false;
+    try {
+      expandRequiredEnvVars(ref, "test token");
+    } catch (e) {
+      emptyRejected = errMsg(e).includes("must not be empty");
+    }
+    check("empty ${ENV} token is rejected instead of silently disabling auth", emptyRejected);
+
+    if (before === undefined) delete process.env[envName];
+    else process.env[envName] = before;
+  }
+
+  // --- tools/call 超时不得重连重试(否则非幂等工具被重复执行) ---
+  {
+    let calls = 0;
+    const freshTransport = (): Transport => {
+      const srv = new McpServer({ name: "slow-echo", version: "0.1.0" });
+      srv.registerTool("slow", { inputSchema: {} }, async () => {
+        calls++;
+        await sleep(300);
+        return { content: [{ type: "text", text: "done" }] };
+      });
+      const [a, b] = InMemoryTransport.createLinkedPair();
+      void srv.connect(a);
+      return b;
+    };
+    const timed = new Downstream("slow", { command: "noop" });
+    (timed as unknown as { buildTransport: () => Transport }).buildTransport = freshTransport;
+    let timeoutMsg = "";
+    try {
+      await timed.callTool(50, "slow", {});
+    } catch (e) {
+      timeoutMsg = errMsg(e);
+    }
+    check(
+      "tool call timeout is not retried (no duplicate side effects)",
+      timeoutMsg.includes("timed out") && calls === 1,
+      `calls=${calls}, err=${timeoutMsg}`
+    );
+    await timed.close();
+  }
+
+  // --- 无鉴权 HTTP 服务不开放 CORS,防止任意网页跨源调用本机工具 ---
+  {
+    const probe = createServer();
+    const freePort = await new Promise<number>((resolve) => {
+      probe.listen(0, "127.0.0.1", () => {
+        const port = (probe.address() as { port: number }).port;
+        probe.close(() => resolve(port));
+      });
+    });
+    const openCtx = {
+      config,
+      downstreams: new Map<string, Downstream>(),
+      registry: new ToolRegistry(),
+      warmup: Promise.resolve(),
+      stats,
+    };
+    const handle = await startHttpServer({ ctx: openCtx, host: "127.0.0.1", port: freePort });
+    const preflight = await fetch(`http://127.0.0.1:${freePort}/mcp`, {
+      method: "OPTIONS",
+      headers: { Origin: "https://evil.example" },
+    });
+    check(
+      "no-auth http server sends no CORS headers to cross-origin pages",
+      preflight.status === 204 && preflight.headers.get("access-control-allow-origin") === null,
+      `status=${preflight.status}, acao=${preflight.headers.get("access-control-allow-origin")}`
+    );
+    const health = await fetch(`http://127.0.0.1:${freePort}/healthz`);
+    check("no-auth loopback server healthz reports auth=false", ((await health.json()) as { auth?: boolean }).auth === false);
+    await handle.close();
   }
 
   console.log(`\n${passed} passed, ${failures.length} failed`);
